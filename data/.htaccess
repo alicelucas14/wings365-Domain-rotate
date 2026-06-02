@@ -1,0 +1,3 @@
+# Block direct download of SQLite database
+Order Allow,Deny
+Deny from all

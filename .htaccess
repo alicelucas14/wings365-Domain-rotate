@@ -1,0 +1,14 @@
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    
+    # Do not rewrite if the file or directory exists physically
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    
+    # Exclude administrative files
+    RewriteCond %{REQUEST_URI} !^/admin\.php$
+    RewriteCond %{REQUEST_URI} !^/database\.php$
+    
+    # Rewrite all other paths to index.php
+    RewriteRule ^(.*)$ index.php [L,QSA]
+</IfModule>

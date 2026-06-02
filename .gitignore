@@ -1,0 +1,7 @@
+# Ignore the local database file containing password hashes, domains, and redirect logs
+data/database.json
+
+# System specific files
+.DS_Store
+Thumbs.db
+.user.ini
