@@ -357,7 +357,7 @@ if ($is_authenticated) {
         $fallback_url = trim($_POST['fallback_url'] ?? '');
         $domain_override = trim($_POST['domain_override'] ?? '');
         $safe_browsing_key = trim($_POST['safe_browsing_key'] ?? '');
-        $check_interval_hours = max(1, intval($_POST['check_interval_hours'] ?? 6));
+        $check_interval_hours = max(0.01, floatval($_POST['check_interval_hours'] ?? 6));
         
         if (empty($fallback_url)) {
             $error = 'Fallback URL cannot be empty.';
@@ -408,7 +408,7 @@ if (empty($fallback_url)) {
 }
 $domain_override = $db->getSetting('domain_override');
 $safe_browsing_key = $db->getSetting('safe_browsing_key');
-$check_interval_hours = intval($db->getSetting('check_interval_hours'));
+$check_interval_hours = floatval($db->getSetting('check_interval_hours'));
 if ($check_interval_hours <= 0) $check_interval_hours = 6;
 
 // Determine active domain display
@@ -2151,10 +2151,10 @@ if (!empty($domain_override)) {
                             <div class="form-group">
                                 <label for="check_interval_hours">Checking Interval (Hours)</label>
                                 <div class="input-wrapper">
-                                    <input type="number" name="check_interval_hours" id="check_interval_hours" class="form-input" value="<?php echo $check_interval_hours; ?>" min="1" required>
+                                    <input type="number" name="check_interval_hours" id="check_interval_hours" class="form-input" value="<?php echo $check_interval_hours; ?>" min="0.01" step="0.01" required>
                                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
                                 </div>
-                                <span style="font-size:0.8rem; color:var(--text-secondary); display:block; margin-top:0.4rem;">How often the system scans the active domain for blocks (default: every 6 hours). Checked periodically during visitor redirects.</span>
+                                <span style="font-size:0.8rem; color:var(--text-secondary); display:block; margin-top:0.4rem;">How often the system scans the active domain for blocks (default: every 6 hours). You can use decimals (e.g. <code>0.5</code> for 30 minutes, <code>0.25</code> for 15 minutes). Checked periodically during visitor redirects.</span>
                             </div>
 
                             <button type="submit" class="submit-btn" style="margin-top: 1.5rem;">Save Settings</button>

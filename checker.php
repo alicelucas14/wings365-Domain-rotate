@@ -316,9 +316,9 @@ function runAutoCheck($db, $force = false) {
     
     if (!$active_domain) return false; // No active domain to check
     
-    $interval_hours = intval($db->getSetting('check_interval_hours'));
+    $interval_hours = floatval($db->getSetting('check_interval_hours'));
     if ($interval_hours <= 0) $interval_hours = 6;
-    $interval_seconds = $interval_hours * 3600;
+    $interval_seconds = intval($interval_hours * 3600);
     
     $needs_check = false;
     if ($force || $active_domain['last_checked'] === 'Never') {
