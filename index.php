@@ -25,6 +25,10 @@ try {
     // Fail silently so redirection never gets disrupted by checker errors
 }
 
+// Get the current hostname and map it to a brand ID (defaults to 1 if not matched)
+$host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+$brand_id = $db->getBrandIdByHost($host);
+
 // Parse slug from the request path
 $requestPath = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) ?? '';
 $slug = trim($requestPath, '/');
@@ -39,7 +43,7 @@ $is_custom_slug = false;
 
 // 1. Try to find the custom slug if it's not empty
 if (!empty($slug)) {
-    $redirect = $db->getRedirectBySlug($slug);
+    $redirect = $db->getRedirectBySlugAndBrand($slug, $brand_id);
     if ($redirect && intval($redirect['status']) === 1) {
         $is_custom_slug = true;
     } else {
@@ -49,7 +53,7 @@ if (!empty($slug)) {
 
 // 2. If no custom slug was found, look up the 'default' slug
 if (!$redirect) {
-    $redirect = $db->getRedirectBySlug('default');
+    $redirect = $db->getRedirectBySlugAndBrand('default', $brand_id);
     if ($redirect && intval($redirect['status']) !== 1) {
         $redirect = null;
     }
@@ -63,8 +67,8 @@ if ($redirect) {
     $target_url = $redirect['target_url'];
     $redirect_id = $redirect['id'];
 } else {
-    // Fallback to settings fallback_url
-    $target_url = $db->getSetting('fallback_url');
+    // Fallback to brand-specific settings fallback_url
+    $target_url = $db->getBrandSetting($brand_id, 'fallback_url');
     if (empty($target_url)) {
         $target_url = 'https://cutt.ly/002wings';
     }

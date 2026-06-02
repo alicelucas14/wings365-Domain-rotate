@@ -304,46 +304,53 @@ function checkDomainBlacklist($domain, $safeBrowsingKey = '') {
 
 // Auto checker executor (checks at most once every interval unless forced)
 function runAutoCheck($db, $force = false) {
-    // Fetch active domain from DB
-    $domains = $db->getDomains();
-    $active_domain = null;
-    foreach ($domains as $d) {
-        if ($d['status'] === 'active') {
-            $active_domain = $d;
-            break;
-        }
-    }
-    
-    if (!$active_domain) return false; // No active domain to check
-    
     $interval_hours = floatval($db->getSetting('check_interval_hours'));
     if ($interval_hours <= 0) $interval_hours = 6;
     $interval_seconds = intval($interval_hours * 3600);
+    $apiKey = $db->getSetting('safe_browsing_key');
     
-    $needs_check = false;
-    if ($force || $active_domain['last_checked'] === 'Never') {
-        $needs_check = true;
-    } else {
-        $last_time = strtotime($active_domain['last_checked']);
-        if ($last_time === false || (time() - $last_time) >= $interval_seconds) {
-            $needs_check = true;
+    $rotated_any = false;
+    
+    // Check all 4 brands
+    for ($brand_id = 1; $brand_id <= 4; $brand_id++) {
+        // Find active domain for this brand
+        $domains = $db->getDomains($brand_id);
+        $active_domain = null;
+        foreach ($domains as $d) {
+            if ($d['status'] === 'active') {
+                $active_domain = $d;
+                break;
+            }
         }
-    }
-    
-    if ($needs_check) {
-        $apiKey = $db->getSetting('safe_browsing_key');
-        $result = checkDomainBlacklist($active_domain['domain'], $apiKey);
         
-        if ($result['blocked']) {
-            // Active domain is blocked! Rotate to the next domain
-            $db->rotateDomain();
-            return true; // Rotated
+        if (!$active_domain) {
+            continue; // No active domain for this brand
+        }
+        
+        $needs_check = false;
+        if ($force || $active_domain['last_checked'] === 'Never') {
+            $needs_check = true;
         } else {
-            // Active domain is clean, update last_checked timestamp
-            $db->updateDomainStatus($active_domain['id'], 'active', '');
+            $last_time = strtotime($active_domain['last_checked']);
+            if ($last_time === false || (time() - $last_time) >= $interval_seconds) {
+                $needs_check = true;
+            }
+        }
+        
+        if ($needs_check) {
+            $result = checkDomainBlacklist($active_domain['domain'], $apiKey);
+            
+            if ($result['blocked']) {
+                // Active domain for this brand is blocked! Rotate to the next domain for this brand
+                $db->rotateDomain($brand_id);
+                $rotated_any = true;
+            } else {
+                // Active domain is clean, update last_checked timestamp
+                $db->updateDomainStatus($active_domain['id'], 'active', '');
+            }
         }
     }
     
-    return false; // Not rotated
+    return $rotated_any;
 }
 ?>

@@ -1,5 +1,5 @@
 <?php
-// Secure JSON Database Helper with Concurrent File Locking
+// Secure JSON Database Helper with Concurrent File Locking - Multi-Brand Support
 
 class JsonDatabase {
     private $db_file;
@@ -22,10 +22,8 @@ class JsonDatabase {
             $this->load();
         }
 
-        // Auto-initialize current hostname as active domain if list is empty
-        if ($this->getUserCount() > 0 && count($this->getDomains()) === 0 && isset($_SERVER['HTTP_HOST'])) {
-            $this->addDomain($_SERVER['HTTP_HOST']);
-        }
+        // Schema migration check
+        $this->migrateSchema();
     }
 
     // Load data from file with shared lock
@@ -41,30 +39,45 @@ class JsonDatabase {
         }
         
         if (!is_array($this->data)) {
-            $this->data = [
-                'users' => [],
-                'redirects' => [],
-                'click_logs' => [],
-                'domains' => [],
-                'settings' => [
-                    'fallback_url' => 'https://cutt.ly/002wings',
-                    'domain_override' => '',
-                    'safe_browsing_key' => '',
-                    'check_interval_hours' => 6
-                ]
-            ];
+            $this->data = $this->getDefaultDataStructure();
         }
+    }
 
-        // Backwards compatibility safety checks
-        if (!isset($this->data['domains'])) {
-            $this->data['domains'] = [];
-        }
-        if (!isset($this->data['settings']['safe_browsing_key'])) {
-            $this->data['settings']['safe_browsing_key'] = '';
-        }
-        if (!isset($this->data['settings']['check_interval_hours'])) {
-            $this->data['settings']['check_interval_hours'] = 6;
-        }
+    private function getDefaultDataStructure() {
+        return [
+            'users' => [],
+            'redirects' => [],
+            'click_logs' => [],
+            'domains' => [],
+            'settings' => [
+                'fallback_url' => 'https://cutt.ly/002wings',
+                'domain_override' => '',
+                'safe_browsing_key' => '',
+                'check_interval_hours' => 6,
+                'brands' => [
+                    '1' => [
+                        'name' => 'Wings365',
+                        'fallback_url' => 'https://cutt.ly/002wings',
+                        'domain_override' => ''
+                    ],
+                    '2' => [
+                        'name' => 'Brand 2',
+                        'fallback_url' => 'https://cutt.ly/002wings',
+                        'domain_override' => ''
+                    ],
+                    '3' => [
+                        'name' => 'Brand 3',
+                        'fallback_url' => 'https://cutt.ly/002wings',
+                        'domain_override' => ''
+                    ],
+                    '4' => [
+                        'name' => 'Brand 4',
+                        'fallback_url' => 'https://cutt.ly/002wings',
+                        'domain_override' => ''
+                    ]
+                ]
+            ]
+        ];
     }
 
     // Safely update database under exclusive lock to prevent race conditions
@@ -84,30 +97,9 @@ class JsonDatabase {
             
             $data = json_decode($content, true);
             if (!is_array($data)) {
-                $data = [
-                    'users' => [],
-                    'redirects' => [],
-                    'click_logs' => [],
-                    'domains' => [],
-                    'settings' => [
-                        'fallback_url' => 'https://cutt.ly/002wings',
-                        'domain_override' => '',
-                        'safe_browsing_key' => '',
-                        'check_interval_hours' => 6
-                    ]
-                ];
+                $data = $this->getDefaultDataStructure();
             }
 
-            if (!isset($data['domains'])) {
-                $data['domains'] = [];
-            }
-            if (!isset($data['settings']['safe_browsing_key'])) {
-                $data['settings']['safe_browsing_key'] = '';
-            }
-            if (!isset($data['settings']['check_interval_hours'])) {
-                $data['settings']['check_interval_hours'] = 6;
-            }
-            
             // Run modification callback
             $data = $callback($data);
             
@@ -124,6 +116,66 @@ class JsonDatabase {
             return true;
         }
         return false;
+    }
+
+    // Schema Migration Helper
+    private function migrateSchema() {
+        $this->load();
+        $needs_update = false;
+
+        $callback = function($data) use (&$needs_update) {
+            // 1. Initialize brands settings if missing
+            if (!isset($data['settings']['brands'])) {
+                $needs_update = true;
+                $default_fallback = $data['settings']['fallback_url'] ?? 'https://cutt.ly/002wings';
+                $default_override = $data['settings']['domain_override'] ?? '';
+                
+                $data['settings']['brands'] = [
+                    '1' => [
+                        'name' => 'Wings365',
+                        'fallback_url' => $default_fallback,
+                        'domain_override' => $default_override
+                    ],
+                    '2' => [
+                        'name' => 'Brand 2',
+                        'fallback_url' => $default_fallback,
+                        'domain_override' => ''
+                    ],
+                    '3' => [
+                        'name' => 'Brand 3',
+                        'fallback_url' => $default_fallback,
+                        'domain_override' => ''
+                    ],
+                    '4' => [
+                        'name' => 'Brand 4',
+                        'fallback_url' => $default_fallback,
+                        'domain_override' => ''
+                    ]
+                ];
+            }
+
+            // 2. Ensure all existing redirects have brand_id
+            foreach ($data['redirects'] as &$r) {
+                if (!isset($r['brand_id'])) {
+                    $needs_update = true;
+                    $r['brand_id'] = 1; // Default to Brand 1 (Wings365)
+                }
+            }
+
+            // 3. Ensure all existing domains have brand_id
+            foreach ($data['domains'] as &$d) {
+                if (!isset($d['brand_id'])) {
+                    $needs_update = true;
+                    $d['brand_id'] = 1; // Default to Brand 1 (Wings365)
+                }
+            }
+
+            return $data;
+        };
+
+        if ($needs_update || !isset($this->data['settings']['brands'])) {
+            $this->update_db($callback);
+        }
     }
 
     // ----------------------------------------------------
@@ -216,22 +268,34 @@ class JsonDatabase {
     }
 
     // ----------------------------------------------------
-    // REDIRECT METHODS
+    // REDIRECT METHODS (Brand-Aware)
     // ----------------------------------------------------
-    public function getRedirects() {
+    public function getRedirects($brand_id = null) {
         $this->load();
-        return $this->data['redirects'];
+        if ($brand_id === null) {
+            return $this->data['redirects'];
+        }
+        $brand_id = intval($brand_id);
+        return array_values(array_filter($this->data['redirects'], function($r) use ($brand_id) {
+            return intval($r['brand_id'] ?? 1) === $brand_id;
+        }));
     }
 
-    public function getRedirectBySlug($slug) {
+    public function getRedirectBySlugAndBrand($slug, $brand_id) {
         $this->load();
         $slug = strtolower(trim($slug));
+        $brand_id = intval($brand_id);
         foreach ($this->data['redirects'] as $r) {
-            if (strtolower($r['slug']) === $slug) {
+            if (strtolower($r['slug']) === $slug && intval($r['brand_id'] ?? 1) === $brand_id) {
                 return $r;
             }
         }
         return null;
+    }
+
+    // Backwards compatibility helper
+    public function getRedirectBySlug($slug) {
+        return $this->getRedirectBySlugAndBrand($slug, 1);
     }
 
     public function getRedirectById($id) {
@@ -244,11 +308,12 @@ class JsonDatabase {
         return null;
     }
 
-    public function addRedirect($slug, $target_url, $status = 1) {
+    public function addRedirect($slug, $target_url, $status = 1, $brand_id = 1) {
         $id = time() . rand(100, 999);
-        $this->update_db(function($data) use ($id, $slug, $target_url, $status) {
+        $this->update_db(function($data) use ($id, $slug, $target_url, $status, $brand_id) {
             $data['redirects'][] = [
                 'id' => intval($id),
+                'brand_id' => intval($brand_id),
                 'slug' => strtolower(trim($slug)),
                 'target_url' => trim($target_url),
                 'status' => intval($status),
@@ -308,11 +373,26 @@ class JsonDatabase {
     }
 
     // ----------------------------------------------------
-    // CLICK LOG METHODS
+    // CLICK LOG METHODS (Brand-Aware)
     // ----------------------------------------------------
-    public function getLogs() {
+    public function getLogs($brand_id = null) {
         $this->load();
-        return $this->data['click_logs'];
+        if ($brand_id === null) {
+            return $this->data['click_logs'];
+        }
+        $brand_id = intval($brand_id);
+        
+        // Find redirects belonging to this brand
+        $brand_redirect_ids = [];
+        foreach ($this->data['redirects'] as $r) {
+            if (intval($r['brand_id'] ?? 1) === $brand_id) {
+                $brand_redirect_ids[] = intval($r['id']);
+            }
+        }
+        
+        return array_values(array_filter($this->data['click_logs'], function($log) use ($brand_redirect_ids) {
+            return in_array(intval($log['redirect_id']), $brand_redirect_ids);
+        }));
     }
 
     public function addClickLog($redirect_id, $ip, $ua, $ref) {
@@ -329,21 +409,40 @@ class JsonDatabase {
         });
     }
 
-    public function clearLogs() {
-        return $this->update_db(function($data) {
-            $data['click_logs'] = [];
-            foreach ($data['redirects'] as &$r) {
-                $r['clicks'] = 0;
+    public function clearLogs($brand_id = null) {
+        return $this->update_db(function($data) use ($brand_id) {
+            if ($brand_id === null) {
+                $data['click_logs'] = [];
+                foreach ($data['redirects'] as &$r) {
+                    $r['clicks'] = 0;
+                }
+            } else {
+                $brand_id = intval($brand_id);
+                // Reset redirect click counters for this brand
+                $brand_redirect_ids = [];
+                foreach ($data['redirects'] as &$r) {
+                    if (intval($r['brand_id'] ?? 1) === $brand_id) {
+                        $r['clicks'] = 0;
+                        $brand_redirect_ids[] = intval($r['id']);
+                    }
+                }
+                // Delete logs belonging to this brand
+                foreach ($data['click_logs'] as $log_key => $log) {
+                    if (in_array(intval($log['redirect_id']), $brand_redirect_ids)) {
+                        unset($data['click_logs'][$log_key]);
+                    }
+                }
+                $data['click_logs'] = array_values($data['click_logs']);
             }
             return $data;
         });
     }
 
-    public function getLogsCount24h() {
-        $this->load();
+    public function getLogsCount24h($brand_id = null) {
+        $logs = $this->getLogs($brand_id);
         $count = 0;
         $now = time();
-        foreach ($this->data['click_logs'] as $log) {
+        foreach ($logs as $log) {
             $logged_time = strtotime($log['clicked_at']);
             if (($now - $logged_time) <= 86400) {
                 $count++;
@@ -353,11 +452,17 @@ class JsonDatabase {
     }
 
     // ----------------------------------------------------
-    // DOMAIN ROTATION METHODS
+    // DOMAIN ROTATION METHODS (Brand-Aware)
     // ----------------------------------------------------
-    public function getDomains() {
+    public function getDomains($brand_id = null) {
         $this->load();
-        return $this->data['domains'];
+        if ($brand_id === null) {
+            return $this->data['domains'];
+        }
+        $brand_id = intval($brand_id);
+        return array_values(array_filter($this->data['domains'], function($d) use ($brand_id) {
+            return intval($d['brand_id'] ?? 1) === $brand_id;
+        }));
     }
 
     public function getDomainById($id) {
@@ -370,14 +475,16 @@ class JsonDatabase {
         return null;
     }
 
-    public function addDomain($domain) {
+    public function addDomain($domain, $brand_id = 1) {
         $domain = strtolower(trim(preg_replace('/^https?:\/\//i', '', $domain)));
         $domain = rtrim($domain, '/');
         
         if (empty($domain)) return false;
         
-        // Check if domain already exists
-        foreach ($this->getDomains() as $d) {
+        $brand_id = intval($brand_id);
+        
+        // Check if domain already exists (globally to avoid collisions)
+        foreach ($this->data['domains'] as $d) {
             if ($d['domain'] === $domain) {
                 return false;
             }
@@ -385,11 +492,11 @@ class JsonDatabase {
 
         $id = time() . rand(100, 999);
         
-        return $this->update_db(function($data) use ($id, $domain) {
-            // Check if there is already an active domain
+        return $this->update_db(function($data) use ($id, $domain, $brand_id) {
+            // Check if there is already an active domain for this brand
             $has_active = false;
             foreach ($data['domains'] as $d) {
-                if ($d['status'] === 'active') {
+                if ($d['status'] === 'active' && intval($d['brand_id'] ?? 1) === $brand_id) {
                     $has_active = true;
                     break;
                 }
@@ -399,6 +506,7 @@ class JsonDatabase {
             
             $data['domains'][] = [
                 'id' => intval($id),
+                'brand_id' => $brand_id,
                 'domain' => $domain,
                 'status' => $status,
                 'last_checked' => 'Never',
@@ -412,8 +520,10 @@ class JsonDatabase {
     public function deleteDomain($id) {
         return $this->update_db(function($data) use ($id) {
             $deleted_active = false;
+            $brand_id = 1;
             foreach ($data['domains'] as $key => $d) {
                 if (intval($d['id']) === intval($id)) {
+                    $brand_id = intval($d['brand_id'] ?? 1);
                     if ($d['status'] === 'active') {
                         $deleted_active = true;
                     }
@@ -423,10 +533,10 @@ class JsonDatabase {
                 }
             }
             
-            // If the active domain was deleted, activate the next clean one
+            // If the active domain was deleted, activate the next clean one for this brand
             if ($deleted_active && !empty($data['domains'])) {
                 foreach ($data['domains'] as &$d) {
-                    if ($d['status'] === 'clean') {
+                    if ($d['status'] === 'clean' && intval($d['brand_id'] ?? 1) === $brand_id) {
                         $d['status'] = 'active';
                         break;
                     }
@@ -436,34 +546,46 @@ class JsonDatabase {
         });
     }
 
-    public function getActiveDomain() {
+    public function getActiveDomain($brand_id = 1) {
         $this->load();
+        $brand_id = intval($brand_id);
         
-        // Find active domain
+        // Find active domain for this brand
         foreach ($this->data['domains'] as $d) {
-            if ($d['status'] === 'active') {
+            if ($d['status'] === 'active' && intval($d['brand_id'] ?? 1) === $brand_id) {
                 return $d['domain'];
             }
         }
         
-        // Fallback: search for first clean domain and make it active
-        if (!empty($this->data['domains'])) {
-            $activated_domain = null;
-            $this->update_db(function($data) use (&$activated_domain) {
-                foreach ($data['domains'] as &$d) {
-                    if ($d['status'] === 'clean') {
-                        $d['status'] = 'active';
-                        $activated_domain = $d['domain'];
-                        break;
-                    }
+        // Fallback: search for first clean domain for this brand and make it active
+        $activated_domain = null;
+        $this->update_db(function($data) use ($brand_id, &$activated_domain) {
+            foreach ($data['domains'] as &$d) {
+                if ($d['status'] === 'clean' && intval($d['brand_id'] ?? 1) === $brand_id) {
+                    $d['status'] = 'active';
+                    $activated_domain = $d['domain'];
+                    break;
                 }
-                return $data;
-            });
-            if ($activated_domain) return $activated_domain;
-        }
+            }
+            return $data;
+        });
+        
+        if ($activated_domain) return $activated_domain;
         
         // Fallback to request host
         return $_SERVER['HTTP_HOST'] ?? 'localhost:8000';
+    }
+
+    // Matches domain hostname to find which brand it belongs to (defaults to Brand 1 if not matched)
+    public function getBrandIdByHost($host) {
+        $this->load();
+        $host = strtolower(trim($host));
+        foreach ($this->data['domains'] as $d) {
+            if ($d['domain'] === $host) {
+                return intval($d['brand_id'] ?? 1);
+            }
+        }
+        return 1; // Default fallback to Brand 1
     }
 
     public function updateDomainStatus($id, $status, $reason = '') {
@@ -480,20 +602,21 @@ class JsonDatabase {
         });
     }
 
-    public function rotateDomain() {
-        return $this->update_db(function($data) {
+    public function rotateDomain($brand_id = 1) {
+        $brand_id = intval($brand_id);
+        return $this->update_db(function($data) use ($brand_id) {
             $active_key = null;
             foreach ($data['domains'] as $key => $d) {
-                if ($d['status'] === 'active') {
+                if ($d['status'] === 'active' && intval($d['brand_id'] ?? 1) === $brand_id) {
                     $active_key = $key;
                     break;
                 }
             }
             
-            // Find a backup domain that is clean
+            // Find a backup domain that is clean for this brand
             $next_clean_key = null;
             foreach ($data['domains'] as $key => $d) {
-                if ($d['status'] === 'clean') {
+                if ($d['status'] === 'clean' && intval($d['brand_id'] ?? 1) === $brand_id) {
                     $next_clean_key = $key;
                     break;
                 }
@@ -512,7 +635,6 @@ class JsonDatabase {
                 $data['domains'][$next_clean_key]['last_checked'] = date('Y-m-d H:i:s');
             } else {
                 // No clean backup domain available!
-                // Log the block but keep it active as a last resort, or do nothing
                 if ($active_key !== null) {
                     $data['domains'][$active_key]['blocked_reason'] = 'Flagged as blocked, but no clean backup domains are available!';
                     $data['domains'][$active_key]['last_checked'] = date('Y-m-d H:i:s');
@@ -523,7 +645,7 @@ class JsonDatabase {
     }
 
     // ----------------------------------------------------
-    // SETTINGS METHODS
+    // SETTINGS METHODS (Global & Brand-Aware)
     // ----------------------------------------------------
     public function getSetting($key) {
         $this->load();
@@ -533,6 +655,20 @@ class JsonDatabase {
     public function updateSetting($key, $value) {
         return $this->update_db(function($data) use ($key, $value) {
             $data['settings'][$key] = $value;
+            return $data;
+        });
+    }
+
+    public function getBrandSetting($brand_id, $key) {
+        $this->load();
+        $brand_id = strval($brand_id);
+        return $this->data['settings']['brands'][$brand_id][$key] ?? '';
+    }
+
+    public function updateBrandSetting($brand_id, $key, $value) {
+        $brand_id = strval($brand_id);
+        return $this->update_db(function($data) use ($brand_id, $key, $value) {
+            $data['settings']['brands'][$brand_id][$key] = $value;
             return $data;
         });
     }

@@ -3,6 +3,17 @@ session_start();
 require_once __DIR__ . '/database.php';
 require_once __DIR__ . '/checker.php';
 
+// Brand ID Selection
+if (isset($_GET['brand_id']) && in_array($_GET['brand_id'], ['1', '2', '3', '4'])) {
+    $_SESSION['active_brand_id'] = intval($_GET['brand_id']);
+    header('Location: admin.php');
+    exit;
+}
+if (!isset($_SESSION['active_brand_id'])) {
+    $_SESSION['active_brand_id'] = 1;
+}
+$active_brand_id = $_SESSION['active_brand_id'];
+
 // Check if there are any users in the database
 $user_count = $db->getUserCount();
 $setup_mode = ($user_count === 0);
@@ -10,6 +21,7 @@ $setup_mode = ($user_count === 0);
 $error = $_SESSION['error'] ?? '';
 $success = $_SESSION['success'] ?? '';
 unset($_SESSION['error'], $_SESSION['success']);
+
 
 // Helper to sanitize slug
 function sanitize_slug($slug) {
@@ -71,14 +83,14 @@ if ($setup_mode && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action
                 'admin'
             );
             
-            // Insert default redirect route if not exists
-            if (!$db->getRedirectBySlug('default')) {
-                $db->addRedirect('default', 'https://cutt.ly/002wings', 1);
+            // Insert default redirect route if not exists for Brand 1
+            if (!$db->getRedirectBySlugAndBrand('default', 1)) {
+                $db->addRedirect('default', 'https://cutt.ly/002wings', 1, 1);
             }
             
-            // Insert current hostname as active domain
+            // Insert current hostname as active domain for Brand 1
             if (isset($_SERVER['HTTP_HOST'])) {
-                $db->addDomain($_SERVER['HTTP_HOST']);
+                $db->addDomain($_SERVER['HTTP_HOST'], 1);
             }
             
             $_SESSION['user_id'] = $userId;
@@ -183,11 +195,11 @@ if ($is_authenticated) {
         } elseif (!filter_var($target_url, FILTER_VALIDATE_URL)) {
             $_SESSION['error'] = 'Invalid Target URL format. Please include http:// or https://.';
         } else {
-            // Check uniqueness
-            if ($db->getRedirectBySlug($slug)) {
+            // Check uniqueness specifically for this brand
+            if ($db->getRedirectBySlugAndBrand($slug, $active_brand_id)) {
                 $_SESSION['error'] = "The slug '{$slug}' already exists.";
             } else {
-                if ($db->addRedirect($slug, $target_url, $status)) {
+                if ($db->addRedirect($slug, $target_url, $status, $active_brand_id)) {
                     $_SESSION['success'] = 'Redirect link created successfully!';
                 } else {
                     $_SESSION['error'] = 'Failed to create redirect link.';
@@ -210,8 +222,8 @@ if ($is_authenticated) {
         } elseif (!filter_var($target_url, FILTER_VALIDATE_URL)) {
             $_SESSION['error'] = 'Invalid Target URL format. Please include http:// or https://.';
         } else {
-            // Check uniqueness except itself
-            $existing = $db->getRedirectBySlug($slug);
+            // Check uniqueness except itself within this brand
+            $existing = $db->getRedirectBySlugAndBrand($slug, $active_brand_id);
             if ($existing && intval($existing['id']) !== $id) {
                 $_SESSION['error'] = "The slug '{$slug}' is already taken by another link.";
             } else {
@@ -246,8 +258,8 @@ if ($is_authenticated) {
     
     // Clear Logs POST
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'clear_logs') {
-        $db->clearLogs();
-        $_SESSION['success'] = 'Click logs cleared and redirect counters reset!';
+        $db->clearLogs($active_brand_id);
+        $_SESSION['success'] = 'Click logs cleared and redirect counters reset for the active brand!';
         header('Location: admin.php?tab=overview');
         exit;
     }
@@ -336,7 +348,7 @@ if ($is_authenticated) {
         if (empty($new_domain)) {
             $_SESSION['error'] = 'Domain name cannot be empty.';
         } else {
-            if ($db->addDomain($new_domain)) {
+            if ($db->addDomain($new_domain, $active_brand_id)) {
                 $_SESSION['success'] = "Domain '{$new_domain}' added to your list.";
             } else {
                 $_SESSION['error'] = "Failed to add domain. It may already exist.";
@@ -369,7 +381,7 @@ if ($is_authenticated) {
 
     // Force Rotate Domain GET
     if (isset($_GET['rotate_domain'])) {
-        $db->rotateDomain();
+        $db->rotateDomain($active_brand_id);
         $_SESSION['success'] = 'Domain rotated to next clean backup successfully.';
         header('Location: admin.php?tab=domains');
         exit;
@@ -377,18 +389,23 @@ if ($is_authenticated) {
     
     // Save Settings POST
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'save_settings') {
+        $brand_name = trim($_POST['brand_name'] ?? '');
         $fallback_url = trim($_POST['fallback_url'] ?? '');
         $domain_override = trim($_POST['domain_override'] ?? '');
         $safe_browsing_key = trim($_POST['safe_browsing_key'] ?? '');
         $check_interval_hours = max(0.01, floatval($_POST['check_interval_hours'] ?? 6));
         
-        if (empty($fallback_url)) {
+        if (empty($brand_name)) {
+            $_SESSION['error'] = 'Brand Name cannot be empty.';
+        } elseif (empty($fallback_url)) {
             $_SESSION['error'] = 'Fallback URL cannot be empty.';
         } elseif (!filter_var($fallback_url, FILTER_VALIDATE_URL)) {
             $_SESSION['error'] = 'Invalid fallback URL format.';
         } else {
-            $db->updateSetting('fallback_url', $fallback_url);
-            $db->updateSetting('domain_override', rtrim($domain_override, '/'));
+            $db->updateBrandSetting($active_brand_id, 'name', $brand_name);
+            $db->updateBrandSetting($active_brand_id, 'fallback_url', $fallback_url);
+            $db->updateBrandSetting($active_brand_id, 'domain_override', rtrim($domain_override, '/'));
+            
             $db->updateSetting('safe_browsing_key', $safe_browsing_key);
             $db->updateSetting('check_interval_hours', $check_interval_hours);
             $_SESSION['success'] = 'Settings updated successfully!';
@@ -399,12 +416,18 @@ if ($is_authenticated) {
     
     // CSV Export Handler
     if (isset($_GET['export']) && $_GET['export'] === 'csv') {
+        $brand_name_setting = $db->getBrandSetting($active_brand_id, 'name');
+        if (empty($brand_name_setting)) {
+            $brand_name_setting = 'Brand_' . $active_brand_id;
+        }
+        $brand_name_slug = preg_replace('/[^a-z0-9]/i', '_', $brand_name_setting);
+        
         header('Content-Type: text/csv; charset=utf-8');
-        header('Content-Disposition: attachment; filename=redirects_export.csv');
+        header('Content-Disposition: attachment; filename=' . $brand_name_slug . '_redirects_export.csv');
         $output = fopen('php://output', 'w');
         fputcsv($output, ['ID', 'Slug', 'Target URL', 'Status', 'Total Clicks', 'Created At']);
         
-        $redirects = $db->getRedirects();
+        $redirects = $db->getRedirects($active_brand_id);
         usort($redirects, function($a, $b) {
             return intval($a['id']) <=> intval($b['id']);
         });
@@ -427,11 +450,15 @@ if ($is_authenticated) {
 // ----------------------------------------------------
 // RESOLVE DYNAMIC VALUES FOR VIEW
 // ----------------------------------------------------
-$fallback_url = $db->getSetting('fallback_url');
+$brand_name = $db->getBrandSetting($active_brand_id, 'name');
+if (empty($brand_name)) {
+    $brand_name = 'Brand ' . $active_brand_id;
+}
+$fallback_url = $db->getBrandSetting($active_brand_id, 'fallback_url');
 if (empty($fallback_url)) {
     $fallback_url = 'https://cutt.ly/002wings';
 }
-$domain_override = $db->getSetting('domain_override');
+$domain_override = $db->getBrandSetting($active_brand_id, 'domain_override');
 $safe_browsing_key = $db->getSetting('safe_browsing_key');
 $check_interval_hours = floatval($db->getSetting('check_interval_hours'));
 if ($check_interval_hours <= 0) $check_interval_hours = 6;
@@ -441,7 +468,7 @@ if (!empty($domain_override)) {
     $domain_url = $domain_override . '/';
 } else {
     $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? "https://" : "http://";
-    $domain_url = $protocol . $db->getActiveDomain() . str_replace('admin.php', '', $_SERVER['SCRIPT_NAME']);
+    $domain_url = $protocol . $db->getActiveDomain($active_brand_id) . str_replace('admin.php', '', $_SERVER['SCRIPT_NAME']);
 }
 ?>
 <!DOCTYPE html>
@@ -1467,8 +1494,29 @@ if (!empty($domain_override)) {
                         <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
                         <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
                     </svg>
-                    Wings365
+                    <?php echo htmlspecialchars($brand_name); ?>
                 </a>
+                
+                <!-- Brand Switcher -->
+                <div class="brand-switcher-container" style="padding: 0.5rem 1.25rem 1rem; border-bottom: 1px solid rgba(255, 255, 255, 0.05); margin-bottom: 1rem;">
+                    <div style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 0.5rem; font-weight: 700;">System Context</div>
+                    <div class="brand-pills" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.25rem; background: rgba(255, 255, 255, 0.03); padding: 0.2rem; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.05);">
+                        <?php for ($i = 1; $i <= 4; $i++): 
+                            $b_name_pill = $db->getBrandSetting($i, 'name');
+                            if (empty($b_name_pill)) $b_name_pill = 'Brand ' . $i;
+                            // Extract first 4 chars of name or acronym for pill
+                            $pill_label = $b_name_pill;
+                            if (strlen($b_name_pill) > 6) {
+                                $pill_label = substr($b_name_pill, 0, 5) . '..';
+                            }
+                            $is_active = (intval($active_brand_id) === $i);
+                        ?>
+                            <a href="admin.php?brand_id=<?php echo $i; ?>" class="brand-pill-btn" style="text-align: center; text-decoration: none; padding: 0.4rem 0.1rem; font-size: 0.72rem; font-weight: 600; border-radius: 6px; transition: all 0.2s; color: <?php echo $is_active ? '#fff' : 'var(--text-secondary)'; ?>; background: <?php echo $is_active ? 'var(--accent-gradient)' : 'transparent'; ?>; box-shadow: <?php echo $is_active ? '0 2px 8px rgba(99,102,241,0.3)' : 'none'; ?>;" title="<?php echo htmlspecialchars($b_name_pill); ?>">
+                                <?php echo htmlspecialchars($pill_label); ?>
+                            </a>
+                        <?php endfor; ?>
+                    </div>
+                </div>
                 
                 <ul class="nav-links">
                     <li class="nav-item <?php echo $current_tab === 'overview' ? 'active' : ''; ?>">
@@ -1539,7 +1587,7 @@ if (!empty($domain_override)) {
                 <!-- TAB: OVERVIEW -->
                 <?php if ($current_tab === 'overview'): 
                     // Calculate Overview figures
-                    $all_redirects_raw = $db->getRedirects();
+                    $all_redirects_raw = $db->getRedirects($active_brand_id);
                     $total_links = count($all_redirects_raw);
                     
                     $active_links = count(array_filter($all_redirects_raw, function($r) {
@@ -1547,7 +1595,7 @@ if (!empty($domain_override)) {
                     }));
                     
                     $total_clicks = array_sum(array_column($all_redirects_raw, 'clicks'));
-                    $clicks_24h = $db->getLogsCount24h();
+                    $clicks_24h = $db->getLogsCount24h($active_brand_id);
                     
                     // Fetch top 5 redirects
                     $top_redirects = $all_redirects_raw;
@@ -1662,7 +1710,7 @@ if (!empty($domain_override)) {
                                 </thead>
                                 <tbody>
                                     <?php 
-                                    $logs_raw = $db->getLogs();
+                                    $logs_raw = $db->getLogs($active_brand_id);
                                     usort($logs_raw, function($a, $b) {
                                         return strtotime($b['clicked_at']) <=> strtotime($a['clicked_at']);
                                     });
@@ -1696,7 +1744,7 @@ if (!empty($domain_override)) {
 
                 <!-- TAB: REDIRECTS -->
                 <?php if ($current_tab === 'redirects'): 
-                    $redirects = $db->getRedirects();
+                    $redirects = $db->getRedirects($active_brand_id);
                     usort($redirects, function($a, $b) {
                         return intval($b['id']) <=> intval($a['id']);
                     });
@@ -1777,7 +1825,7 @@ if (!empty($domain_override)) {
 
                 <!-- TAB: DOMAINS LIST -->
                 <?php if ($current_tab === 'domains'): 
-                    $domains = $db->getDomains();
+                    $domains = $db->getDomains($active_brand_id);
                     usort($domains, function($a, $b) {
                         return intval($a['id']) <=> intval($b['id']);
                     });
@@ -1867,7 +1915,7 @@ if (!empty($domain_override)) {
                     $filter_slug = $_GET['filter_slug'] ?? '';
                     $filter_ip = $_GET['filter_ip'] ?? '';
                     
-                    $all_logs = $db->getLogs();
+                    $all_logs = $db->getLogs($active_brand_id);
                     usort($all_logs, function($a, $b) {
                         return strtotime($b['clicked_at']) <=> strtotime($a['clicked_at']);
                     });
@@ -1886,7 +1934,7 @@ if (!empty($domain_override)) {
                     $logs = array_slice($filtered_logs, 0, 100);
                     
                     // Fetch list of slugs for filter select
-                    $all_slugs_list = $db->getRedirects();
+                    $all_slugs_list = $db->getRedirects($active_brand_id);
                     usort($all_slugs_list, function($a, $b) {
                         return strcmp($a['slug'], $b['slug']);
                     });
@@ -2142,26 +2190,42 @@ if (!empty($domain_override)) {
                         <form method="POST">
                             <input type="hidden" name="action" value="save_settings">
                             
+                            <!-- Brand settings section -->
+                            <div style="border-bottom:1px solid var(--border-color); padding-bottom:0.75rem; margin-bottom:1.5rem;">
+                                <h4 style="font-size:0.9rem; font-weight:600; text-transform:uppercase; color:var(--text-secondary); margin-bottom:0.25rem;">Brand settings (<?php echo htmlspecialchars($brand_name); ?>)</h4>
+                                <span style="font-size:0.75rem; color:var(--text-secondary);">These settings only apply to the currently selected brand.</span>
+                            </div>
+
                             <div class="form-group">
-                                <label for="fallback_url">Global Fallback URL</label>
+                                <label for="brand_name">Brand Name</label>
+                                <div class="input-wrapper">
+                                    <input type="text" name="brand_name" id="brand_name" class="form-input" value="<?php echo htmlspecialchars($brand_name); ?>" placeholder="e.g. Wings365" required>
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
+                                </div>
+                                <span style="font-size:0.8rem; color:var(--text-secondary); display:block; margin-top:0.4rem;">The display name for the currently selected brand.</span>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="fallback_url">Brand Fallback URL</label>
                                 <div class="input-wrapper">
                                     <input type="text" name="fallback_url" id="fallback_url" class="form-input" value="<?php echo htmlspecialchars($fallback_url); ?>" placeholder="https://cutt.ly/002wings" required>
                                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
                                 </div>
-                                <span style="font-size:0.8rem; color:var(--text-secondary); display:block; margin-top:0.4rem;">Used as a backup redirection target when an requested slug does not match any entry, and no <code>/</code> (default) redirect exists.</span>
+                                <span style="font-size:0.8rem; color:var(--text-secondary); display:block; margin-top:0.4rem;">Used as a backup redirection target when an requested slug does not match any entry, and no default redirect exists for this brand.</span>
                             </div>
 
                             <div class="form-group" style="margin-top: 2rem;">
-                                <label for="domain_override">Domain Override (Optional)</label>
+                                <label for="domain_override">Brand Domain Override (Optional)</label>
                                 <div class="input-wrapper">
                                     <input type="text" name="domain_override" id="domain_override" class="form-input" value="<?php echo htmlspecialchars($domain_override); ?>" placeholder="e.g. https://wingsinformation.com">
                                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>
                                 </div>
-                                <span style="font-size:0.8rem; color:var(--text-secondary); display:block; margin-top:0.4rem;">If set, copies of link paths on the dashboard will use this URL instead of dynamically detecting the host header. Include the protocol (<code>http://</code> or <code>https://</code>) but do not include a trailing slash.</span>
+                                <span style="font-size:0.8rem; color:var(--text-secondary); display:block; margin-top:0.4rem;">If set, copies of link paths on the dashboard for this brand will use this URL instead of dynamically detecting the host header. Include the protocol (<code>http://</code> or <code>https://</code>) but do not include a trailing slash.</span>
                             </div>
 
                             <div style="border-top:1px solid var(--border-color); padding-top:1.5rem; margin-top:2rem; margin-bottom:1rem;">
-                                <h4 style="font-size:0.9rem; font-weight:600; text-transform:uppercase; color:var(--text-secondary); margin-bottom:1rem;">Blacklist Check Configuration</h4>
+                                <h4 style="font-size:0.9rem; font-weight:600; text-transform:uppercase; color:var(--text-secondary); margin-bottom:0.25rem;">Global Configuration</h4>
+                                <span style="font-size:0.75rem; color:var(--text-secondary); margin-bottom:1rem; display:block;">These settings apply to all 4 brands across the entire system.</span>
                             </div>
 
                             <div class="form-group">
