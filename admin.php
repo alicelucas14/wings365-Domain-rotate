@@ -449,7 +449,7 @@ if (!empty($domain_override)) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LinkUpdater — Console</title>
+    <title>Gold888 — Console</title>
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1467,7 +1467,7 @@ if (!empty($domain_override)) {
                         <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
                         <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
                     </svg>
-                    LinkUpdater
+                    Gold888
                 </a>
                 
                 <ul class="nav-links">
@@ -2240,7 +2240,7 @@ if (!empty($domain_override)) {
     <?php endif; ?>
 
     <footer>
-        LinkUpdater console &copy; 2026. JSON safe local storage active.
+        Gold888 console &copy; 2026. JSON safe local storage active.
     </footer>
 
     <script>
