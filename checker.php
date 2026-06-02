@@ -31,9 +31,221 @@ function checker_post_json($url, $data) {
     return $result ? json_decode($result, true) : null;
 }
 
+// Helper function to query a specific DNS server using raw UDP sockets in PHP
+function queryCustomDNS($domain, $dnsServer) {
+    $port = 53;
+    $timeout = 3; // 3 seconds timeout
+    
+    // 1. Transaction ID (random 16-bit number) and Flags (0x0100 = Standard query, recursion desired)
+    $transactionId = rand(10000, 65535);
+    $header = pack('n6', $transactionId, 0x0100, 1, 0, 0, 0);
+    
+    // 2. Format Domain Name (e.g. "google.com" -> "\x06google\x03com\x00")
+    $qname = '';
+    $parts = explode('.', $domain);
+    foreach ($parts as $part) {
+        $qname .= chr(strlen($part)) . $part;
+    }
+    $qname .= "\x00";
+    
+    // Type A (1), Class IN (1)
+    $question = $qname . pack('n2', 1, 1);
+    $packet = $header . $question;
+    
+    // 3. Send over UDP socket
+    $socket = @fsockopen("udp://$dnsServer", $port, $errno, $errstr, $timeout);
+    if (!$socket) {
+        return ['error' => "Socket error: $errstr ($errno)"];
+    }
+    
+    stream_set_timeout($socket, $timeout);
+    fwrite($socket, $packet);
+    
+    $response = fread($socket, 512);
+    $info = stream_get_meta_data($socket);
+    fclose($socket);
+    
+    if ($info['timed_out']) {
+        return ['error' => 'Timeout'];
+    }
+    
+    if (strlen($response) < 12) {
+        return ['error' => 'Invalid DNS response size'];
+    }
+    
+    // 4. Parse Header
+    $headerData = unpack('n6', substr($response, 0, 12));
+    $resTransactionId = $headerData[1];
+    $flags = $headerData[2];
+    $qdCount = $headerData[3];
+    $anCount = $headerData[4];
+    
+    if ($resTransactionId !== $transactionId) {
+        return ['error' => 'Transaction ID mismatch'];
+    }
+    
+    // Check RCODE (last 4 bits of flags: 0 = No error, 3 = Name Error / NXDOMAIN)
+    $rcode = $flags & 0x000F;
+    if ($rcode !== 0) {
+        return ['error' => 'RCODE error code ' . $rcode, 'rcode' => $rcode];
+    }
+    
+    if ($anCount === 0) {
+        return ['ips' => []];
+    }
+    
+    // 5. Skip Question section
+    $offset = 12;
+    while ($offset < strlen($response)) {
+        $len = ord($response[$offset]);
+        if ($len === 0) {
+            $offset++;
+            break;
+        }
+        if (($len & 0xC0) === 0xC0) {
+            $offset += 2;
+            break;
+        }
+        $offset += $len + 1;
+    }
+    $offset += 4; // Skip QTYPE and QCLASS
+    
+    // 6. Parse Answers
+    $ips = [];
+    for ($i = 0; $i < $anCount; $i++) {
+        if ($offset >= strlen($response)) {
+            break;
+        }
+        
+        $firstByte = ord($response[$offset]);
+        if (($firstByte & 0xC0) === 0xC0) {
+            $offset += 2;
+        } else {
+            while ($offset < strlen($response)) {
+                $len = ord($response[$offset]);
+                if ($len === 0) {
+                    $offset++;
+                    break;
+                }
+                $offset += $len + 1;
+            }
+        }
+        
+        if ($offset + 10 > strlen($response)) {
+            break;
+        }
+        
+        $typeData = unpack('ntype/nclass/Nttl/nrdlength', substr($response, $offset, 10));
+        $type = $typeData['type'] ?? 0;
+        $rdlength = $typeData['rdlength'] ?? 0;
+        $offset += 10;
+        
+        if ($offset + $rdlength > strlen($response)) {
+            break;
+        }
+        
+        $rdata = substr($response, $offset, $rdlength);
+        $offset += $rdlength;
+        
+        if ($type === 1 && $rdlength === 4) { // Type A record
+            $ip = ord($rdata[0]) . '.' . ord($rdata[1]) . '.' . ord($rdata[2]) . '.' . ord($rdata[3]);
+            $ips[] = $ip;
+        }
+    }
+    
+    return ['ips' => $ips];
+}
+
+// Function to check if a domain is blocked by Indonesian ISPs (Telkomsel, etc.)
+function checkIndonesianIspBlock($domain) {
+    // 1. Check clean resolution using Google DNS to verify if domain actually exists
+    $googleRes = queryCustomDNS($domain, '8.8.8.8');
+    if (isset($googleRes['error']) || empty($googleRes['ips'])) {
+        // Domain doesn't resolve globally (NXDOMAIN/Offline), so it is not active or hasn't propagated.
+        // We do not treat this as an ISP block event, but DNS BL or Google Safe Browsing can handle it.
+        return ['blocked' => false, 'reason' => ''];
+    }
+    
+    $cleanIps = $googleRes['ips'];
+    
+    // Known Indonesian DNS servers that enforce TrustPositif/Internet Positif blocking
+    $indonesianDnsServers = [
+        'Telkom Speedy/IndiHome DNS' => '203.130.196.155',
+        'Biznet DNS' => '202.169.33.33',
+        'XL/Axis DNS' => '202.152.240.50'
+    ];
+    
+    // Known TrustPositif / Internet Positif redirect/hijack IP patterns
+    // We check if resolved IP matches standard block/loopback/government block ranges
+    $blockedIpPrefixes = [
+        '36.86.63.',   // Telkom internetpositif.id landing range
+        '118.98.97.',  // Older Telkom block page IP range
+        '127.0.0.',    // Localhost redirect blocks
+        '0.0.0.0'
+    ];
+    
+    foreach ($indonesianDnsServers as $dnsName => $dnsIp) {
+        $res = queryCustomDNS($domain, $dnsIp);
+        
+        // If we hit a timeout or transport error on a specific Indonesian DNS, we try the next one
+        if (isset($res['error'])) {
+            continue;
+        }
+        
+        // If it returns Name Error (NXDOMAIN / RCODE 3) from Indonesian DNS while resolving fine on Google DNS,
+        // it means the domain is blocked/dropped by the Indonesian DNS server.
+        if (isset($res['rcode']) && $res['rcode'] === 3) {
+            return [
+                'blocked' => true,
+                'reason' => "Indonesian ISP DNS ({$dnsName}) blocked the domain (returned NXDOMAIN)"
+            ];
+        }
+        
+        $resolvedIps = $res['ips'] ?? [];
+        if (empty($resolvedIps)) {
+            return [
+                'blocked' => true,
+                'reason' => "Indonesian ISP DNS ({$dnsName}) failed to resolve domain"
+            ];
+        }
+        
+        foreach ($resolvedIps as $ip) {
+            // Check if resolved IP is in the blocked patterns
+            foreach ($blockedIpPrefixes as $prefix) {
+                if (strpos($ip, $prefix) === 0) {
+                    return [
+                        'blocked' => true,
+                        'reason' => "Redirected to Indonesian ISP block page IP ({$ip}) via {$dnsName}"
+                    ];
+                }
+            }
+            
+            // Check if the resolved IP is completely different from the real IP resolved by Google DNS
+            // (Standard DNS hijacking check)
+            if (!in_array($ip, $cleanIps)) {
+                return [
+                    'blocked' => true,
+                    'reason' => "Spoofed DNS response detected (resolves to {$ip} instead of real server IP) via {$dnsName}"
+                ];
+            }
+        }
+    }
+    
+    return ['blocked' => false, 'reason' => ''];
+}
+
 // Main Blacklist Check function
 function checkDomainBlacklist($domain, $safeBrowsingKey = '') {
-    // 1. DNS BL Checks (SURBL & Spamhaus) - Keyless and free
+    // 1. Check if blocked by Indonesian ISPs (Telkomsel/Internet Positif)
+    $ispCheck = checkIndonesianIspBlock($domain);
+    if ($ispCheck['blocked']) {
+        return [
+            'blocked' => true,
+            'reason' => 'Flagged by Indonesian ISP: ' . $ispCheck['reason']
+        ];
+    }
+
+    // 2. DNS BL Checks (SURBL & Spamhaus) - Keyless and free
     // Normalize domain for DNS lookup (remove www. if present)
     $lookup_domain = preg_replace('/^www\./i', '', $domain);
     
@@ -53,7 +265,7 @@ function checkDomainBlacklist($domain, $safeBrowsingKey = '') {
         ];
     }
     
-    // 2. Google Safe Browsing API Check (Optional)
+    // 3. Google Safe Browsing API Check (Optional)
     if (!empty($safeBrowsingKey)) {
         $api_url = "https://safebrowsing.googleapis.com/v4/threatMatches:find?key=" . $safeBrowsingKey;
         $request_data = [
@@ -88,6 +300,7 @@ function checkDomainBlacklist($domain, $safeBrowsingKey = '') {
         'reason' => ''
     ];
 }
+
 
 // Auto checker executor (checks at most once every interval unless forced)
 function runAutoCheck($db, $force = false) {
