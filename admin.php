@@ -190,6 +190,9 @@ if ($is_authenticated) {
         $target_url = trim($_POST['target_url'] ?? '');
         $status = isset($_POST['status']) ? 1 : 0;
         
+        $backup_urls_raw = $_POST['backup_urls'] ?? '';
+        $backup_urls = array_values(array_filter(array_map('trim', explode("\n", $backup_urls_raw))));
+        
         if (empty($slug) || empty($target_url)) {
             $_SESSION['error'] = 'Slug and Target URL are required.';
         } elseif (!filter_var($target_url, FILTER_VALIDATE_URL)) {
@@ -199,7 +202,7 @@ if ($is_authenticated) {
             if ($db->getRedirectBySlugAndBrand($slug, $active_brand_id)) {
                 $_SESSION['error'] = "The slug '{$slug}' already exists.";
             } else {
-                if ($db->addRedirect($slug, $target_url, $status, $active_brand_id)) {
+                if ($db->addRedirect($slug, $target_url, $status, $active_brand_id, $backup_urls)) {
                     $_SESSION['success'] = 'Redirect link created successfully!';
                 } else {
                     $_SESSION['error'] = 'Failed to create redirect link.';
@@ -217,6 +220,9 @@ if ($is_authenticated) {
         $target_url = trim($_POST['target_url'] ?? '');
         $status = isset($_POST['status']) ? 1 : 0;
         
+        $backup_urls_raw = $_POST['backup_urls'] ?? '';
+        $backup_urls = array_values(array_filter(array_map('trim', explode("\n", $backup_urls_raw))));
+        
         if (empty($slug) || empty($target_url)) {
             $_SESSION['error'] = 'All fields are required.';
         } elseif (!filter_var($target_url, FILTER_VALIDATE_URL)) {
@@ -227,7 +233,7 @@ if ($is_authenticated) {
             if ($existing && intval($existing['id']) !== $id) {
                 $_SESSION['error'] = "The slug '{$slug}' is already taken by another link.";
             } else {
-                if ($db->updateRedirect($id, $slug, $target_url, $status)) {
+                if ($db->updateRedirect($id, $slug, $target_url, $status, $backup_urls)) {
                     $_SESSION['success'] = 'Redirect link updated successfully!';
                 } else {
                     $_SESSION['error'] = 'Failed to update redirect link.';
@@ -2284,6 +2290,12 @@ if (!empty($domain_override)) {
                         <div id="modal-url-validation" style="color:var(--error-color); font-size:0.75rem; display:none; margin-top:0.35rem;">Include a valid protocol (http:// or https://) in the URL.</div>
                     </div>
 
+                    <div class="form-group" style="margin-top:1rem;">
+                        <label for="modal-backups">Backup Target URLs (Optional, one per line)</label>
+                        <textarea name="backup_urls" id="modal-backups" class="form-input" rows="4" placeholder="https://backup-domain-1.com/landing&#10;https://backup-domain-2.com/landing" style="font-family: monospace; font-size: 0.9rem; resize: vertical; height: auto; min-height: 100px; padding: 0.75rem;"></textarea>
+                        <span style="font-size:0.75rem; color:var(--text-secondary); display:block; margin-top:0.35rem;">If the main target is blocked in Indonesia, the system rotates to the next backup URL in this list automatically.</span>
+                    </div>
+
                     <div class="form-group" style="margin-top:1.5rem; margin-bottom:1.5rem;">
                         <label class="checkbox-container">
                             <input type="checkbox" name="status" id="modal-status" checked>
@@ -2331,6 +2343,7 @@ if (!empty($domain_override)) {
             document.getElementById("modal-slug").value = "";
             document.getElementById("modal-slug").removeAttribute("readonly");
             document.getElementById("modal-target").value = "";
+            document.getElementById("modal-backups").value = "";
             document.getElementById("modal-status").checked = true;
             
             document.getElementById("link-modal").classList.add("active");
@@ -2351,6 +2364,8 @@ if (!empty($domain_override)) {
             }
             
             document.getElementById("modal-target").value = linkData.target_url;
+            var backups = linkData.backup_urls || [];
+            document.getElementById("modal-backups").value = backups.join("\n");
             document.getElementById("modal-status").checked = parseInt(linkData.status) === 1;
             
             document.getElementById("link-modal").classList.add("active");

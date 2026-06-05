@@ -162,11 +162,15 @@ class JsonDatabase {
                 ];
             }
 
-            // 2. Ensure all existing redirects have brand_id
+            // 2. Ensure all existing redirects have brand_id and backup_urls
             foreach ($data['redirects'] as &$r) {
                 if (!isset($r['brand_id'])) {
                     $needs_update = true;
                     $r['brand_id'] = 1; // Default to Brand 1 (Wings365)
+                }
+                if (!isset($r['backup_urls']) || !is_array($r['backup_urls'])) {
+                    $needs_update = true;
+                    $r['backup_urls'] = [];
                 }
             }
 
@@ -316,14 +320,15 @@ class JsonDatabase {
         return null;
     }
 
-    public function addRedirect($slug, $target_url, $status = 1, $brand_id = 1) {
+    public function addRedirect($slug, $target_url, $status = 1, $brand_id = 1, $backup_urls = []) {
         $id = time() . rand(100, 999);
-        $this->update_db(function($data) use ($id, $slug, $target_url, $status, $brand_id) {
+        $this->update_db(function($data) use ($id, $slug, $target_url, $status, $brand_id, $backup_urls) {
             $data['redirects'][] = [
                 'id' => intval($id),
                 'brand_id' => intval($brand_id),
                 'slug' => strtolower(trim($slug)),
                 'target_url' => trim($target_url),
+                'backup_urls' => $backup_urls,
                 'status' => intval($status),
                 'clicks' => 0,
                 'created_at' => date('Y-m-d H:i:s')
@@ -333,13 +338,34 @@ class JsonDatabase {
         return $id;
     }
 
-    public function updateRedirect($id, $slug, $target_url, $status) {
-        return $this->update_db(function($data) use ($id, $slug, $target_url, $status) {
+    public function updateRedirect($id, $slug, $target_url, $status, $backup_urls = []) {
+        return $this->update_db(function($data) use ($id, $slug, $target_url, $status, $backup_urls) {
             foreach ($data['redirects'] as &$r) {
                 if (intval($r['id']) === intval($id)) {
                     $r['slug'] = strtolower(trim($slug));
                     $r['target_url'] = trim($target_url);
+                    $r['backup_urls'] = $backup_urls;
                     $r['status'] = intval($status);
+                    break;
+                }
+            }
+            return $data;
+        });
+    }
+
+    public function rotateRedirectTarget($redirect_id, $reason = '') {
+        return $this->update_db(function($data) use ($redirect_id, $reason) {
+            foreach ($data['redirects'] as &$r) {
+                if (intval($r['id']) === intval($redirect_id)) {
+                    $backup_urls = $r['backup_urls'] ?? [];
+                    if (!empty($backup_urls)) {
+                        $old_target = $r['target_url'];
+                        $new_target = array_shift($backup_urls);
+                        $backup_urls[] = $old_target;
+                        
+                        $r['target_url'] = $new_target;
+                        $r['backup_urls'] = $backup_urls;
+                    }
                     break;
                 }
             }

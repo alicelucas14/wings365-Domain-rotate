@@ -363,6 +363,7 @@ function runAutoCheck($db, $force = false) {
         }
         
         if ($needs_check) {
+            // 1. Verify and rotate landing domain
             $result = checkDomainBlacklist($active_domain['domain'], $apiKey, $active_domain['created_at'] ?? '');
             
             if ($result['blocked']) {
@@ -372,6 +373,28 @@ function runAutoCheck($db, $force = false) {
             } else {
                 // Active domain is clean, update last_checked timestamp
                 $db->updateDomainStatus($active_domain['id'], 'active', '');
+            }
+            
+            // 2. Verify and rotate active redirect target destinations
+            $redirects = $db->getRedirects($brand_id);
+            foreach ($redirects as $r) {
+                if (intval($r['status']) !== 1) {
+                    continue; // Skip inactive redirects
+                }
+                
+                $target_url = $r['target_url'];
+                $target_host = parse_url($target_url, PHP_URL_HOST);
+                if (empty($target_host)) {
+                    continue;
+                }
+                
+                // Query Indonesian ISP check for target host. We ignore NXDOMAIN for target hosts.
+                $ispCheck = checkIndonesianIspBlock($target_host, true);
+                if ($ispCheck['blocked']) {
+                    // Target destination is blocked in Indonesia! Rotate to the next backup URL.
+                    $db->rotateRedirectTarget($r['id'], $ispCheck['reason']);
+                    $rotated_any = true;
+                }
             }
         }
     }
