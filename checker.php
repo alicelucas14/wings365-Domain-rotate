@@ -268,7 +268,8 @@ function checkDomainBlacklist($domain, $safeBrowsingKey = '', $createdAt = '') {
         ];
     }
 
-    // 2. DNS BL Checks (SURBL & Spamhaus) - Keyless and free
+    // 2. DNS BL Checks (SURBL & Spamhaus) - Disabled as requested
+    /*
     // Normalize domain for DNS lookup (remove www. if present)
     $lookup_domain = preg_replace('/^www\./i', '', $domain);
     
@@ -287,6 +288,7 @@ function checkDomainBlacklist($domain, $safeBrowsingKey = '', $createdAt = '') {
             'reason' => 'Flagged by DNS blocklist (' . implode(', ', $reasons) . ')'
         ];
     }
+    */
     
     // 3. Google Safe Browsing API Check (Optional)
     if (!empty($safeBrowsingKey)) {
