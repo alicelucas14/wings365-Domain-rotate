@@ -157,7 +157,7 @@ function queryCustomDNS($domain, $dnsServer) {
 }
 
 // Function to check if a domain is blocked by Indonesian ISPs (Telkomsel, etc.)
-function checkIndonesianIspBlock($domain) {
+function checkIndonesianIspBlock($domain, $ignoreNxdomain = false) {
     // 1. Check clean resolution using Google DNS to verify if domain actually exists
     $googleRes = queryCustomDNS($domain, '8.8.8.8');
     if (isset($googleRes['error']) || empty($googleRes['ips'])) {
@@ -185,6 +185,14 @@ function checkIndonesianIspBlock($domain) {
     ];
     
     foreach ($indonesianDnsServers as $dnsName => $dnsIp) {
+        // --- SANITY CHECK: Ensure we can query this DNS server from our location ---
+        $testRes = queryCustomDNS('google.com', $dnsIp);
+        if (isset($testRes['error']) || empty($testRes['ips'])) {
+            // If we cannot resolve google.com on this server, it means the DNS server is blocking
+            // external queries, or is down/unreachable from our server. We must skip it.
+            continue;
+        }
+
         $res = queryCustomDNS($domain, $dnsIp);
         
         // If we hit a timeout or transport error on a specific Indonesian DNS, we try the next one
@@ -195,6 +203,9 @@ function checkIndonesianIspBlock($domain) {
         // If it returns Name Error (NXDOMAIN / RCODE 3) from Indonesian DNS while resolving fine on Google DNS,
         // it means the domain is blocked/dropped by the Indonesian DNS server.
         if (isset($res['rcode']) && $res['rcode'] === 3) {
+            if ($ignoreNxdomain) {
+                continue;
+            }
             return [
                 'blocked' => true,
                 'reason' => "Indonesian ISP DNS ({$dnsName}) blocked the domain (returned NXDOMAIN)"
@@ -203,6 +214,9 @@ function checkIndonesianIspBlock($domain) {
         
         $resolvedIps = $res['ips'] ?? [];
         if (empty($resolvedIps)) {
+            if ($ignoreNxdomain) {
+                continue;
+            }
             return [
                 'blocked' => true,
                 'reason' => "Indonesian ISP DNS ({$dnsName}) failed to resolve domain"
@@ -235,9 +249,18 @@ function checkIndonesianIspBlock($domain) {
 }
 
 // Main Blacklist Check function
-function checkDomainBlacklist($domain, $safeBrowsingKey = '') {
+function checkDomainBlacklist($domain, $safeBrowsingKey = '', $createdAt = '') {
+    // Calculate if we should ignore NXDOMAIN/empty resolution (e.g. if the domain is under 24 hours old)
+    $ignoreNxdomain = false;
+    if (!empty($createdAt) && $createdAt !== 'Never') {
+        $created_time = strtotime($createdAt);
+        if ($created_time !== false && (time() - $created_time) < 86400) {
+            $ignoreNxdomain = true;
+        }
+    }
+
     // 1. Check if blocked by Indonesian ISPs (Telkomsel/Internet Positif)
-    $ispCheck = checkIndonesianIspBlock($domain);
+    $ispCheck = checkIndonesianIspBlock($domain, $ignoreNxdomain);
     if ($ispCheck['blocked']) {
         return [
             'blocked' => true,
@@ -338,11 +361,11 @@ function runAutoCheck($db, $force = false) {
         }
         
         if ($needs_check) {
-            $result = checkDomainBlacklist($active_domain['domain'], $apiKey);
+            $result = checkDomainBlacklist($active_domain['domain'], $apiKey, $active_domain['created_at'] ?? '');
             
             if ($result['blocked']) {
                 // Active domain for this brand is blocked! Rotate to the next domain for this brand
-                $db->rotateDomain($brand_id);
+                $db->rotateDomain($brand_id, $result['reason']);
                 $rotated_any = true;
             } else {
                 // Active domain is clean, update last_checked timestamp

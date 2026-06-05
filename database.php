@@ -41,6 +41,14 @@ class JsonDatabase {
         if (!is_array($this->data)) {
             $this->data = $this->getDefaultDataStructure();
         }
+        
+        // Ensure all top-level keys exist
+        $defaults = $this->getDefaultDataStructure();
+        foreach ($defaults as $key => $val) {
+            if (!isset($this->data[$key])) {
+                $this->data[$key] = $val;
+            }
+        }
     }
 
     private function getDefaultDataStructure() {
@@ -602,9 +610,9 @@ class JsonDatabase {
         });
     }
 
-    public function rotateDomain($brand_id = 1) {
+    public function rotateDomain($brand_id = 1, $reason = '') {
         $brand_id = intval($brand_id);
-        return $this->update_db(function($data) use ($brand_id) {
+        return $this->update_db(function($data) use ($brand_id, $reason) {
             $active_key = null;
             foreach ($data['domains'] as $key => $d) {
                 if ($d['status'] === 'active' && intval($d['brand_id'] ?? 1) === $brand_id) {
@@ -622,11 +630,13 @@ class JsonDatabase {
                 }
             }
             
+            $blocked_reason = !empty($reason) ? $reason : 'Auto-rotated: Blocked by blacklist check.';
+            
             if ($next_clean_key !== null) {
                 // Mark current active as blocked
                 if ($active_key !== null) {
                     $data['domains'][$active_key]['status'] = 'blocked';
-                    $data['domains'][$active_key]['blocked_reason'] = 'Auto-rotated: Blocked by blacklist check.';
+                    $data['domains'][$active_key]['blocked_reason'] = $blocked_reason;
                     $data['domains'][$active_key]['last_checked'] = date('Y-m-d H:i:s');
                 }
                 
@@ -636,7 +646,7 @@ class JsonDatabase {
             } else {
                 // No clean backup domain available!
                 if ($active_key !== null) {
-                    $data['domains'][$active_key]['blocked_reason'] = 'Flagged as blocked, but no clean backup domains are available!';
+                    $data['domains'][$active_key]['blocked_reason'] = !empty($reason) ? $reason : 'Flagged as blocked, but no clean backup domains are available!';
                     $data['domains'][$active_key]['last_checked'] = date('Y-m-d H:i:s');
                 }
             }

@@ -381,7 +381,7 @@ if ($is_authenticated) {
 
     // Force Rotate Domain GET
     if (isset($_GET['rotate_domain'])) {
-        $db->rotateDomain($active_brand_id);
+        $db->rotateDomain($active_brand_id, 'Manually rotated by admin.');
         $_SESSION['success'] = 'Domain rotated to next clean backup successfully.';
         header('Location: admin.php?tab=domains');
         exit;
