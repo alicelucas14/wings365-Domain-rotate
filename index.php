@@ -7,7 +7,10 @@ ini_set('display_errors', 0);
 
 // Check if the timestamp query parameter is present to bypass browser/proxy caches
 if (!isset($_GET['timestamp'])) {
-    $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? "https://" : "http://";
+    $isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ||
+               (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') ||
+               (!empty($_SERVER['HTTP_FRONT_END_HTTPS']) && $_SERVER['HTTP_FRONT_END_HTTPS'] !== 'off');
+    $protocol = $isHttps ? "https://" : "http://";
     $redirectUrl = $protocol . $_SERVER['HTTP_HOST'] . $_SERVER['REQUEST_URI'];
     $urlWithTimestamp = $redirectUrl . (strpos($_SERVER['REQUEST_URI'], '?') === false ? '?' : '&') . "timestamp=" . microtime(true);
     header("Location: $urlWithTimestamp", true, 302);
@@ -21,7 +24,7 @@ require_once __DIR__ . '/database.php';
 require_once __DIR__ . '/checker.php';
 try {
     runAutoCheck($db);
-} catch (Exception $e) {
+} catch (Throwable $e) {
     // Fail silently so redirection never gets disrupted by checker errors
 }
 
@@ -40,6 +43,7 @@ if ($slug === 'index.php') {
 
 $redirect = null;
 $is_custom_slug = false;
+$append_path = false;
 
 // 1. Try to find the custom slug if it's not empty
 if (!empty($slug)) {
@@ -54,7 +58,9 @@ if (!empty($slug)) {
 // 2. If no custom slug was found, look up the 'default' slug
 if (!$redirect) {
     $redirect = $db->getRedirectBySlugAndBrand('default', $brand_id);
-    if ($redirect && intval($redirect['status']) !== 1) {
+    if ($redirect && intval($redirect['status']) === 1) {
+        $append_path = true; // Only append path for wildcard default redirects
+    } else {
         $redirect = null;
     }
 }
@@ -98,22 +104,22 @@ if ($redirect_id !== null) {
 }
 
 // Helper to construct the target URL with query parameters forwarded correctly
-function buildRedirectUrl($targetUrl, $isCustomSlug) {
+function buildRedirectUrl($targetUrl, $appendPath) {
     $queryString = parse_url($_SERVER['REQUEST_URI'], PHP_URL_QUERY) ?? '';
     
     // Strip the timestamp parameter
     $queryString = preg_replace('/(^|&)timestamp=[0-9.]+(\&|$)/', '$1', $queryString);
     $queryString = trim($queryString, '&');
     
-    if ($isCustomSlug) {
-        // Custom slug: append query parameters only
+    if (!$appendPath) {
+        // Custom slug or Fallback: append query parameters only
         if (!empty($queryString)) {
             $separator = (strpos($targetUrl, '?') === false) ? '?' : '&';
             return $targetUrl . $separator . $queryString;
         }
         return $targetUrl;
     } else {
-        // Fallback or Default: append full path + query parameters
+        // Default: append full path + query parameters
         $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) ?? '';
         $path = trim($path, '/');
         if ($path === 'index.php') {
@@ -133,7 +139,7 @@ function buildRedirectUrl($targetUrl, $isCustomSlug) {
 }
 
 // Redirect to target URL
-$final_destination = buildRedirectUrl($target_url, $is_custom_slug);
+$final_destination = buildRedirectUrl($target_url, $append_path);
 header("Location: " . $final_destination, true, 302);
 exit;
 ?>

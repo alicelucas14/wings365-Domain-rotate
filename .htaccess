@@ -1,6 +1,9 @@
 <IfModule mod_rewrite.c>
     RewriteEngine On
     
+    # Rewrite /admin or /admin/ to admin.php
+    RewriteRule ^admin/?$ admin.php [L,QSA]
+    
     # Do not rewrite if the file or directory exists physically
     RewriteCond %{REQUEST_FILENAME} !-f
     RewriteCond %{REQUEST_FILENAME} !-d

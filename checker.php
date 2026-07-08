@@ -10,7 +10,7 @@ function checker_post_json($url, $data) {
             'header'  => "Content-Type: application/json\r\n",
             'method'  => 'POST',
             'content' => $json_content,
-            'timeout' => 5 // Max 5 seconds timeout
+            'timeout' => 2 // Max 2 seconds timeout
         ]
     ];
     $context = stream_context_create($options);
@@ -23,7 +23,7 @@ function checker_post_json($url, $data) {
         curl_setopt($ch, CURLOPT_POST, true);
         curl_setopt($ch, CURLOPT_POSTFIELDS, $json_content);
         curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 2);
         $result = curl_exec($ch);
         curl_close($ch);
     }
@@ -34,7 +34,7 @@ function checker_post_json($url, $data) {
 // Helper function to query a specific DNS server using raw UDP sockets in PHP
 function queryCustomDNS($domain, $dnsServer) {
     $port = 53;
-    $timeout = 3; // 3 seconds timeout
+    $timeout = 1; // 1 second timeout
     
     // 1. Transaction ID (random 16-bit number) and Flags (0x0100 = Standard query, recursion desired)
     $transactionId = rand(10000, 65535);
