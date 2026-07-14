@@ -252,8 +252,119 @@ function checkIndonesianIspBlock($domain, $ignoreNxdomain = false) {
     return ['blocked' => false, 'reason' => ''];
 }
 
+// Function to check if a domain is blocked by Indonesian ISPs via SOCKS/HTTP Proxy
+function checkDomainBlockViaProxy($domain, $proxyHost, $proxyPort, $proxyUser = '', $proxyPass = '') {
+    $url = "http://" . $domain;
+    
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    
+    // Clean proxy host in case user entered protocol scheme (e.g. socks5://1.2.3.4 -> 1.2.3.4)
+    $cleanHost = $proxyHost;
+    $proxyType = CURLPROXY_HTTP;
+    if (preg_match('/^(https?|socks5h?|socks4a?):\/\/(.*)$/i', $proxyHost, $matches)) {
+        $scheme = strtolower($matches[1]);
+        $cleanHost = $matches[2];
+        if (strpos($scheme, 'socks5') === 0) {
+            $proxyType = CURLPROXY_SOCKS5;
+        } elseif (strpos($scheme, 'socks4') === 0) {
+            $proxyType = CURLPROXY_SOCKS4;
+        }
+    }
+    
+    curl_setopt($ch, CURLOPT_PROXY, $cleanHost);
+    curl_setopt($ch, CURLOPT_PROXYPORT, intval($proxyPort));
+    curl_setopt($ch, CURLOPT_PROXYTYPE, $proxyType);
+    
+    if (!empty($proxyUser)) {
+        curl_setopt($ch, CURLOPT_PROXYUSERPWD, $proxyUser . ":" . $proxyPass);
+    }
+    
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+    curl_setopt($ch, CURLOPT_MAXREDIRS, 3);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 6); // Slightly longer timeout for residential proxies
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 4);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+    curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    
+    $response = curl_exec($ch);
+    $err = curl_error($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $effectiveUrl = curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
+    curl_close($ch);
+    
+    if ($response === false) {
+        // Check if the connection failure indicates a block (like DNS resolution failure or reset)
+        if (stripos($err, 'resolve') !== false || stripos($err, 'couldnotresolve') !== false || stripos($err, 'host') !== false) {
+            return [
+                'blocked' => true,
+                'reason' => "Failed to resolve domain through proxy: " . $err
+            ];
+        }
+        if (stripos($err, 'reset') !== false || stripos($err, 'refused') !== false || stripos($err, 'empty') !== false) {
+            return [
+                'blocked' => true,
+                'reason' => "Connection reset/refused through proxy (SNI/IP block)"
+            ];
+        }
+        
+        // Log proxy-specific connection issues without marking domain blocked to avoid false positives
+        return ['blocked' => false, 'reason' => ''];
+    }
+    
+    // Check if redirected to a known Indonesian block page URL
+    $blockedDomains = [
+        'internetpositif.id',
+        'trustpositif.kominfo.go.id',
+        'aduankonten.id',
+        'blockpage',
+        'internet-positif',
+        'trustpositif'
+    ];
+    
+    $parsedEffective = parse_url($effectiveUrl, PHP_URL_HOST);
+    if (!empty($parsedEffective)) {
+        foreach ($blockedDomains as $bd) {
+            if (stripos($parsedEffective, $bd) !== false) {
+                return [
+                    'blocked' => true,
+                    'reason' => "Redirected to Indonesian ISP block page: " . $effectiveUrl
+                ];
+            }
+        }
+    }
+    
+    // Check HTML content for block keywords
+    $blockedKeywords = [
+        'internet positif',
+        'internet-positif',
+        'trust positif',
+        'trust-positif',
+        'blokir',
+        'dblokir',
+        'konten negatif',
+        'aduan konten'
+    ];
+    
+    foreach ($blockedKeywords as $keyword) {
+        if (stripos($response, $keyword) !== false) {
+            return [
+                'blocked' => true,
+                'reason' => "Block page keyword '{$keyword}' detected in HTML response"
+            ];
+        }
+    }
+    
+    return [
+        'blocked' => false,
+        'reason' => ''
+    ];
+}
+
 // Main Blacklist Check function
-function checkDomainBlacklist($domain, $safeBrowsingKey = '', $createdAt = '') {
+function checkDomainBlacklist($domain, $safeBrowsingKey = '', $createdAt = '', $proxySettings = []) {
     // Calculate if we should ignore NXDOMAIN/empty resolution (e.g. if the domain is under 24 hours old)
     $ignoreNxdomain = false;
     if (!empty($createdAt) && $createdAt !== 'Never') {
@@ -264,7 +375,12 @@ function checkDomainBlacklist($domain, $safeBrowsingKey = '', $createdAt = '') {
     }
 
     // 1. Check if blocked by Indonesian ISPs (Telkomsel/Internet Positif)
-    $ispCheck = checkIndonesianIspBlock($domain, $ignoreNxdomain);
+    if (!empty($proxySettings) && $proxySettings['enabled'] && !empty($proxySettings['host']) && !empty($proxySettings['port'])) {
+        $ispCheck = checkDomainBlockViaProxy($domain, $proxySettings['host'], $proxySettings['port'], $proxySettings['username'], $proxySettings['password']);
+    } else {
+        $ispCheck = checkIndonesianIspBlock($domain, $ignoreNxdomain);
+    }
+    
     if ($ispCheck['blocked']) {
         return [
             'blocked' => true,
@@ -367,8 +483,17 @@ function runAutoCheck($db, $force = false) {
         }
         
         if ($needs_check) {
+            // Read proxy settings
+            $proxySettings = [
+                'enabled' => intval($db->getSetting('proxy_enabled')),
+                'host' => $db->getSetting('proxy_host'),
+                'port' => $db->getSetting('proxy_port'),
+                'username' => $db->getSetting('proxy_username'),
+                'password' => $db->getSetting('proxy_password')
+            ];
+            
             // 1. Verify and rotate landing domain
-            $result = checkDomainBlacklist($active_domain['domain'], $apiKey, $active_domain['created_at'] ?? '');
+            $result = checkDomainBlacklist($active_domain['domain'], $apiKey, $active_domain['created_at'] ?? '', $proxySettings);
             
             if ($result['blocked']) {
                 // Active domain for this brand is blocked! Rotate to the next domain for this brand
@@ -393,7 +518,12 @@ function runAutoCheck($db, $force = false) {
                 }
                 
                 // Query Indonesian ISP check for target host. We ignore NXDOMAIN for target hosts.
-                $ispCheck = checkIndonesianIspBlock($target_host, true);
+                if ($proxySettings['enabled'] && !empty($proxySettings['host']) && !empty($proxySettings['port'])) {
+                    $ispCheck = checkDomainBlockViaProxy($target_host, $proxySettings['host'], $proxySettings['port'], $proxySettings['username'], $proxySettings['password']);
+                } else {
+                    $ispCheck = checkIndonesianIspBlock($target_host, true);
+                }
+                
                 if ($ispCheck['blocked']) {
                     // Target destination is blocked in Indonesia! Rotate to the next backup URL.
                     $db->rotateRedirectTarget($r['id'], $ispCheck['reason']);

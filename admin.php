@@ -407,12 +407,20 @@ if ($is_authenticated) {
         $safe_browsing_key = trim($_POST['safe_browsing_key'] ?? '');
         $check_interval_hours = max(0.01, floatval($_POST['check_interval_hours'] ?? 6));
         
+        $proxy_enabled = isset($_POST['proxy_enabled']) ? 1 : 0;
+        $proxy_host = trim($_POST['proxy_host'] ?? '');
+        $proxy_port = trim($_POST['proxy_port'] ?? '');
+        $proxy_username = trim($_POST['proxy_username'] ?? '');
+        $proxy_password = trim($_POST['proxy_password'] ?? '');
+        
         if (empty($brand_name)) {
             $_SESSION['error'] = 'Brand Name cannot be empty.';
         } elseif (empty($fallback_url)) {
             $_SESSION['error'] = 'Fallback URL cannot be empty.';
         } elseif (!filter_var($fallback_url, FILTER_VALIDATE_URL)) {
             $_SESSION['error'] = 'Invalid fallback URL format.';
+        } elseif ($proxy_enabled && (empty($proxy_host) || empty($proxy_port))) {
+            $_SESSION['error'] = 'Proxy Host and Port are required when proxy checking is enabled.';
         } else {
             $db->updateBrandSetting($active_brand_id, 'name', $brand_name);
             $db->updateBrandSetting($active_brand_id, 'fallback_url', $fallback_url);
@@ -420,6 +428,13 @@ if ($is_authenticated) {
             
             $db->updateSetting('safe_browsing_key', $safe_browsing_key);
             $db->updateSetting('check_interval_hours', $check_interval_hours);
+            
+            $db->updateSetting('proxy_enabled', $proxy_enabled);
+            $db->updateSetting('proxy_host', $proxy_host);
+            $db->updateSetting('proxy_port', intval($proxy_port) > 0 ? intval($proxy_port) : '');
+            $db->updateSetting('proxy_username', $proxy_username);
+            $db->updateSetting('proxy_password', $proxy_password);
+            
             $_SESSION['success'] = 'Settings updated successfully!';
         }
         header('Location: admin.php?tab=settings');
@@ -474,6 +489,12 @@ $domain_override = $db->getBrandSetting($active_brand_id, 'domain_override');
 $safe_browsing_key = $db->getSetting('safe_browsing_key');
 $check_interval_hours = floatval($db->getSetting('check_interval_hours'));
 if ($check_interval_hours <= 0) $check_interval_hours = 6;
+
+$proxy_enabled = intval($db->getSetting('proxy_enabled'));
+$proxy_host = $db->getSetting('proxy_host');
+$proxy_port = $db->getSetting('proxy_port');
+$proxy_username = $db->getSetting('proxy_username');
+$proxy_password = $db->getSetting('proxy_password');
 
 // Determine active domain display
 if (!empty($domain_override)) {
@@ -2387,6 +2408,53 @@ if (!empty($domain_override)) {
                                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
                                 </div>
                                 <span style="font-size:0.8rem; color:var(--text-secondary); display:block; margin-top:0.4rem;">How often the system scans the active domain for blocks (default: every 6 hours). You can use decimals (e.g. <code>0.5</code> for 30 minutes, <code>0.25</code> for 15 minutes). Checked periodically during visitor redirects.</span>
+                            </div>
+
+                            <div style="border-top:1px solid var(--border-color); padding-top:1.5rem; margin-top:2rem; margin-bottom:1rem;">
+                                <h4 style="font-size:0.9rem; font-weight:600; text-transform:uppercase; color:var(--text-secondary); margin-bottom:0.25rem;">Indonesian Proxy Configuration (Optional)</h4>
+                                <span style="font-size:0.75rem; color:var(--text-secondary); margin-bottom:1rem; display:block;">Routes domain blacklist verification queries through an Indonesian IP proxy to bypass local ISP blocks.</span>
+                            </div>
+
+                            <div class="form-group" style="margin-bottom: 1.5rem;">
+                                <label class="checkbox-container">
+                                    <input type="checkbox" name="proxy_enabled" id="proxy_enabled" value="1" <?php echo $proxy_enabled ? 'checked' : ''; ?>>
+                                    <span class="checkbox-checkmark">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                                    </span>
+                                    Enable Indonesian Proxy for Blacklist Checking
+                                </label>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="proxy_host">Proxy Host / Server</label>
+                                <div class="input-wrapper">
+                                    <input type="text" name="proxy_host" id="proxy_host" class="form-input" value="<?php echo htmlspecialchars($proxy_host); ?>" placeholder="e.g. pr.oxylabs.io">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="proxy_port">Proxy Port</label>
+                                <div class="input-wrapper">
+                                    <input type="number" name="proxy_port" id="proxy_port" class="form-input" value="<?php echo htmlspecialchars($proxy_port); ?>" placeholder="e.g. 7777">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="proxy_username">Proxy Username (Optional)</label>
+                                <div class="input-wrapper">
+                                    <input type="text" name="proxy_username" id="proxy_username" class="form-input" value="<?php echo htmlspecialchars($proxy_username); ?>" placeholder="e.g. customer-username-cc-ID">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="proxy_password">Proxy Password (Optional)</label>
+                                <div class="input-wrapper">
+                                    <input type="password" name="proxy_password" id="proxy_password" class="form-input" value="<?php echo htmlspecialchars($proxy_password); ?>" placeholder="Proxy Password">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                                </div>
                             </div>
 
                             <button type="submit" class="submit-btn" style="margin-top: 1.5rem;">Save Settings</button>

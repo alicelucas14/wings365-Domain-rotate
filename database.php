@@ -62,6 +62,11 @@ class JsonDatabase {
                 'domain_override' => '',
                 'safe_browsing_key' => '',
                 'check_interval_hours' => 6,
+                'proxy_enabled' => 0,
+                'proxy_host' => '',
+                'proxy_port' => '',
+                'proxy_username' => '',
+                'proxy_password' => '',
                 'brands' => [
                     '1' => [
                         'name' => 'Wings365',
@@ -182,10 +187,25 @@ class JsonDatabase {
                 }
             }
 
+            // 4. Ensure proxy settings exist
+            $proxy_keys = [
+                'proxy_enabled' => 0,
+                'proxy_host' => '',
+                'proxy_port' => '',
+                'proxy_username' => '',
+                'proxy_password' => ''
+            ];
+            foreach ($proxy_keys as $key => $default_val) {
+                if (!isset($data['settings'][$key])) {
+                    $needs_update = true;
+                    $data['settings'][$key] = $default_val;
+                }
+            }
+
             return $data;
         };
 
-        if ($needs_update || !isset($this->data['settings']['brands'])) {
+        if ($needs_update || !isset($this->data['settings']['brands']) || !isset($this->data['settings']['proxy_enabled'])) {
             $this->update_db($callback);
         }
     }
