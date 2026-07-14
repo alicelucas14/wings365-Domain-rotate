@@ -156,17 +156,102 @@ function queryCustomDNS($domain, $dnsServer) {
     return ['ips' => $ips];
 }
 
+// Helper function to check if an IP address belongs to Cloudflare
+function isCloudflareIp($ip) {
+    $ip_long = ip2long($ip);
+    if ($ip_long === false) return false;
+    
+    // Cloudflare IPv4 ranges
+    $ranges = [
+        ['173.245.48.0', '173.245.63.255'],
+        ['103.21.244.0', '103.21.247.255'],
+        ['103.22.200.0', '103.22.203.255'],
+        ['103.31.4.0', '103.31.7.255'],
+        ['141.101.64.0', '141.101.127.255'],
+        ['108.162.192.0', '108.162.255.255'],
+        ['190.93.240.0', '190.93.255.255'],
+        ['188.114.96.0', '188.114.127.255'],
+        ['197.234.240.0', '197.234.243.255'],
+        ['198.41.128.0', '198.41.255.255'],
+        ['162.158.0.0', '162.159.255.255'],
+        ['104.16.0.0', '104.31.255.255'],
+        ['172.64.0.0', '172.71.255.255'],
+        ['131.27.0.0', '131.27.255.255']
+    ];
+    
+    foreach ($ranges as $range) {
+        $start = ip2long($range[0]);
+        $end = ip2long($range[1]);
+        if ($ip_long >= $start && $ip_long <= $end) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Helper function to check if an IP address belongs to Google
+function isGoogleIp($ip) {
+    $ip_long = ip2long($ip);
+    if ($ip_long === false) return false;
+    
+    // Google IPv4 ranges
+    $ranges = [
+        ['142.250.0.0', '142.251.255.255'],
+        ['172.217.0.0', '172.253.255.255'],
+        ['216.58.192.0', '216.58.223.255'],
+        ['74.125.0.0', '74.125.255.255'],
+        ['64.233.160.0', '64.233.191.255'],
+        ['108.177.0.0', '108.177.255.255'],
+        ['209.85.128.0', '209.85.255.255'],
+        ['72.14.192.0', '72.14.255.255']
+    ];
+    
+    foreach ($ranges as $range) {
+        $start = ip2long($range[0]);
+        $end = ip2long($range[1]);
+        if ($ip_long >= $start && $ip_long <= $end) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Function to check if a domain is blocked by Indonesian ISPs (Telkomsel, etc.)
 function checkIndonesianIspBlock($domain, $ignoreNxdomain = false) {
-    // 1. Check clean resolution using Google DNS to verify if domain actually exists
-    $googleRes = queryCustomDNS($domain, '8.8.8.8');
-    if (isset($googleRes['error']) || empty($googleRes['ips'])) {
+    // 1. Check clean resolution using system resolver first (works behind outbound port 53 firewalls)
+    $cleanIps = [];
+    
+    // Resolve via dns_get_record first to fetch all A records
+    $dnsRecords = @dns_get_record($domain, DNS_A);
+    if (is_array($dnsRecords)) {
+        foreach ($dnsRecords as $record) {
+            if (isset($record['ip']) && filter_var($record['ip'], FILTER_VALIDATE_IP)) {
+                $cleanIps[] = $record['ip'];
+            }
+        }
+    }
+    
+    // Supplement with gethostbyname to be thorough
+    $hostByName = @gethostbyname($domain);
+    if ($hostByName !== $domain && filter_var($hostByName, FILTER_VALIDATE_IP)) {
+        if (!in_array($hostByName, $cleanIps)) {
+            $cleanIps[] = $hostByName;
+        }
+    }
+    
+    // Fallback to Google DNS query if system resolver was empty
+    if (empty($cleanIps)) {
+        $googleRes = queryCustomDNS($domain, '8.8.8.8');
+        if (!isset($googleRes['error']) && !empty($googleRes['ips'])) {
+            $cleanIps = $googleRes['ips'];
+        }
+    }
+    
+    if (empty($cleanIps)) {
         // Domain doesn't resolve globally (NXDOMAIN/Offline), so it is not active or hasn't propagated.
         // We do not treat this as an ISP block event, but DNS BL or Google Safe Browsing can handle it.
         return ['blocked' => false, 'reason' => ''];
     }
-    
-    $cleanIps = $googleRes['ips'];
     
     // Known Indonesian DNS servers that enforce TrustPositif/Internet Positif blocking
     $indonesianDnsServers = [
@@ -241,14 +326,37 @@ function checkIndonesianIspBlock($domain, $ignoreNxdomain = false) {
             // Check if the resolved IP is completely different from the real IP resolved by Google DNS
             // (Standard DNS hijacking check)
             if (!in_array($ip, $cleanIps)) {
-                return [
-                    'blocked' => true,
-                    'reason' => "Spoofed DNS response detected (resolves to {$ip} instead of real server IP) via {$dnsName}"
-                ];
+                // Bypass if both the resolved IP and at least one clean IP are Cloudflare IPs
+                $bothCloudflare = false;
+                if (isCloudflareIp($ip)) {
+                    foreach ($cleanIps as $cleanIp) {
+                        if (isCloudflareIp($cleanIp)) {
+                            $bothCloudflare = true;
+                            break;
+                        }
+                    }
+                }
+                
+                // Bypass if both the resolved IP and at least one clean IP are Google IPs
+                $bothGoogle = false;
+                if (!$bothCloudflare && isGoogleIp($ip)) {
+                    foreach ($cleanIps as $cleanIp) {
+                        if (isGoogleIp($cleanIp)) {
+                            $bothGoogle = true;
+                            break;
+                        }
+                    }
+                }
+                
+                if (!$bothCloudflare && !$bothGoogle) {
+                    return [
+                        'blocked' => true,
+                        'reason' => "Spoofed DNS response detected (resolves to {$ip} instead of real server IP) via {$dnsName}"
+                    ];
+                }
             }
         }
     }
-    
     return ['blocked' => false, 'reason' => ''];
 }
 
@@ -374,11 +482,15 @@ function checkDomainBlacklist($domain, $safeBrowsingKey = '', $createdAt = '', $
         }
     }
 
-    // 1. Check if blocked by Indonesian ISPs (Telkomsel/Internet Positif)
-    if (!empty($proxySettings) && $proxySettings['enabled'] && !empty($proxySettings['host']) && !empty($proxySettings['port'])) {
-        $ispCheck = checkDomainBlockViaProxy($domain, $proxySettings['host'], $proxySettings['port'], $proxySettings['username'], $proxySettings['password']);
-    } else {
-        $ispCheck = checkIndonesianIspBlock($domain, $ignoreNxdomain);
+    // 1. Run direct DNS block check first (queries APJII DNS Bersama directly)
+    $ispCheck = checkIndonesianIspBlock($domain, $ignoreNxdomain);
+    
+    // If the DNS check didn't flag it as blocked, and proxy settings are enabled, run the proxy check
+    if (!$ispCheck['blocked'] && !empty($proxySettings) && $proxySettings['enabled'] && !empty($proxySettings['host']) && !empty($proxySettings['port'])) {
+        $proxyCheck = checkDomainBlockViaProxy($domain, $proxySettings['host'], $proxySettings['port'], $proxySettings['username'], $proxySettings['password']);
+        if ($proxyCheck['blocked']) {
+            $ispCheck = $proxyCheck;
+        }
     }
     
     if ($ispCheck['blocked']) {
@@ -518,12 +630,16 @@ function runAutoCheck($db, $force = false) {
                 }
                 
                 // Query Indonesian ISP check for target host. We ignore NXDOMAIN for target hosts.
-                if ($proxySettings['enabled'] && !empty($proxySettings['host']) && !empty($proxySettings['port'])) {
-                    $ispCheck = checkDomainBlockViaProxy($target_host, $proxySettings['host'], $proxySettings['port'], $proxySettings['username'], $proxySettings['password']);
-                } else {
-                    $ispCheck = checkIndonesianIspBlock($target_host, true);
-                }
+                // Always check via direct DNS first
+                $ispCheck = checkIndonesianIspBlock($target_host, true);
                 
+                // If DNS check is clean and proxy is enabled, also check via proxy
+                if (!$ispCheck['blocked'] && $proxySettings['enabled'] && !empty($proxySettings['host']) && !empty($proxySettings['port'])) {
+                    $proxyCheck = checkDomainBlockViaProxy($target_host, $proxySettings['host'], $proxySettings['port'], $proxySettings['username'], $proxySettings['password']);
+                    if ($proxyCheck['blocked']) {
+                        $ispCheck = $proxyCheck;
+                    }
+                }
                 if ($ispCheck['blocked']) {
                     // Target destination is blocked in Indonesia! Rotate to the next backup URL.
                     $db->rotateRedirectTarget($r['id'], $ispCheck['reason']);
