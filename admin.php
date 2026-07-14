@@ -2444,7 +2444,7 @@ if (!empty($domain_override)) {
                             <div class="form-group">
                                 <label for="proxy_username">Proxy Username (Optional)</label>
                                 <div class="input-wrapper">
-                                    <input type="text" name="proxy_username" id="proxy_username" class="form-input" value="<?php echo htmlspecialchars($proxy_username); ?>" placeholder="e.g. customer-username-cc-ID">
+                                    <input type="text" name="proxy_username" id="proxy_username" class="form-input" value="<?php echo htmlspecialchars($proxy_username); ?>" placeholder="e.g. customer-username-cc-ID" autocomplete="new-password">
                                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
                                 </div>
                             </div>
@@ -2452,7 +2452,7 @@ if (!empty($domain_override)) {
                             <div class="form-group">
                                 <label for="proxy_password">Proxy Password (Optional)</label>
                                 <div class="input-wrapper">
-                                    <input type="password" name="proxy_password" id="proxy_password" class="form-input" value="<?php echo htmlspecialchars($proxy_password); ?>" placeholder="Proxy Password">
+                                    <input type="password" name="proxy_password" id="proxy_password" class="form-input" value="<?php echo htmlspecialchars($proxy_password); ?>" placeholder="Proxy Password" autocomplete="new-password">
                                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
                                 </div>
                             </div>
